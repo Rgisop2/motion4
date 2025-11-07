@@ -49,7 +49,7 @@ class Database:
 
     async def get_session(self, id):
         user = await self.users_col.find_one({'id': int(id)})
-        return user['session']
+        return user['session'] if user else None
 
     async def add_channel(self, user_id, channel_id, base_username, interval):
         channel = self.new_channel(user_id, channel_id, base_username, interval)
