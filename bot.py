@@ -1,6 +1,7 @@
 from pyrogram import Client
 from config import API_ID, API_HASH, BOT_TOKEN
 from plugins.link_changer import link_changer
+from plugins.scheduler import scheduler
 from plugins.database import db
 import asyncio
 
@@ -26,6 +27,7 @@ class Bot(Client):
         
         print('Bot Started Powered By @VJ_Botz')
         
+        await scheduler.restore_all_schedules()
         await self.resume_all_channels()
 
     async def resume_all_channels(self):
