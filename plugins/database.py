@@ -38,6 +38,8 @@ class Database:
             interval = interval,
             is_active = True,
             last_changed = None,
+            stop_schedule = None,  # Format: "HH:MM:SS"
+            resume_schedule = None,  # Format: "HH:MM:SS"
         )
     
     async def add_user(self, id, name):
@@ -180,5 +182,22 @@ class Database:
     async def get_channel(self, channel_id):
         return await self.channels_col.find_one({'channel_id': int(channel_id)})
 
+    async def set_channel_schedule(self, channel_id, stop_time, resume_time):
+        """Set daily stop and resume times for a channel"""
+        await self.channels_col.update_one(
+            {'channel_id': int(channel_id)},
+            {'$set': {'stop_schedule': stop_time, 'resume_schedule': resume_time}}
+        )
+
+    async def remove_channel_schedule(self, channel_id):
+        """Remove scheduled stop/resume for a channel"""
+        await self.channels_col.update_one(
+            {'channel_id': int(channel_id)},
+            {'$set': {'stop_schedule': None, 'resume_schedule': None}}
+        )
+
+    async def get_scheduled_channels(self):
+        """Get all channels with scheduled stop/resume"""
+        return await self.channels_col.find({'stop_schedule': {'$ne': None}}).to_list(None)
+
 db = Database(DB_URI, DB_NAME)
-                          
