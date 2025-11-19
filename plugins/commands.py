@@ -307,8 +307,8 @@ async def stop_everyday(client, message):
             await message.reply("<b>Invalid format. Use: /stopeveryday <channel_id> <stop_time> | <resume_time></b>")
             return
         
-        stop_time = times_part[0].split()[-1].strip()  # Get last word before |
-        resume_time = times_part[1].strip().split()[0]  # Get first word after |
+        stop_time = times_part[0].split()[-1].strip()
+        resume_time = times_part[1].strip().split()[0]
         
         user_id = message.from_user.id
         active_account = await db.get_active_account(user_id)
@@ -318,8 +318,19 @@ async def stop_everyday(client, message):
             return
         
         channel = await db.get_channel(channel_id)
-        if not channel or channel['account_id'] != active_account['account_id']:
-            await message.reply("<b>Channel not found or doesn't belong to your active account.</b>")
+        if not channel:
+            await message.reply("<b>Channel not found.</b>")
+            return
+        
+        if 'account_id' not in channel:
+            # Migrate old channel to new format
+            await db.channels_col.update_one(
+                {'channel_id': int(channel_id)},
+                {'$set': {'account_id': active_account['account_id']}}
+            )
+            channel['account_id'] = active_account['account_id']
+        elif channel['account_id'] != active_account['account_id']:
+            await message.reply("<b>Channel doesn't belong to your active account.</b>")
             return
         
         # Validate time format
@@ -338,7 +349,7 @@ async def stop_everyday(client, message):
         success, result = await scheduler.schedule_channel_task(
             channel_id,
             user_id,
-            active_account['account_id'],
+            channel['account_id'],
             stop_time,
             resume_time
         )
@@ -376,8 +387,18 @@ async def remove_schedule(client, message):
             return
         
         channel = await db.get_channel(channel_id)
-        if not channel or channel['account_id'] != active_account['account_id']:
-            await message.reply("<b>Channel not found or doesn't belong to your active account.</b>")
+        if not channel:
+            await message.reply("<b>Channel not found.</b>")
+            return
+        
+        if 'account_id' not in channel:
+            await db.channels_col.update_one(
+                {'channel_id': int(channel_id)},
+                {'$set': {'account_id': active_account['account_id']}}
+            )
+            channel['account_id'] = active_account['account_id']
+        elif channel['account_id'] != active_account['account_id']:
+            await message.reply("<b>Channel doesn't belong to your active account.</b>")
             return
         
         if not channel.get('stop_schedule'):
@@ -388,7 +409,7 @@ async def remove_schedule(client, message):
         success = await scheduler.remove_schedule(channel_id)
         
         if success:
-            await message.reply(f"<b>Schedule removed for channel {channel_id}</b>")
+            await message.reply(f"<b>Schedule removed for channel {channel_id}.</b>")
         else:
             await message.reply("<b>Error removing schedule.</b>")
     except ValueError:
