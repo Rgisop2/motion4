@@ -380,14 +380,18 @@ async def remove_schedule(client, message):
             await message.reply("<b>Channel not found or doesn't belong to your active account.</b>")
             return
         
+        if not channel.get('stop_schedule'):
+            await message.reply("<b>No schedule found for this channel.</b>")
+            return
+        
         from plugins.scheduler import scheduler
         success = await scheduler.remove_schedule(channel_id)
         
         if success:
-            await message.reply(f"<b>✅ Schedule removed for channel {channel_id}</b>")
+            await message.reply(f"<b>Schedule removed for channel {channel_id}</b>")
         else:
-            await message.reply(f"<b>❌ Error removing schedule.</b>")
+            await message.reply("<b>Error removing schedule.</b>")
     except ValueError:
         await message.reply("<b>Invalid channel ID.</b>")
     except Exception as e:
-        await message.reply(f"<b>Error:</b> {str(e)}")
+        await message.reply(f"<b>Error: {str(e)}</b>")
