@@ -26,7 +26,6 @@ class Bot(Client):
         
         print('Bot Started Powered By @VJ_Botz')
         
-        # Resume all active channels on startup
         await self.resume_all_channels()
 
     async def resume_all_channels(self):
@@ -35,18 +34,20 @@ class Bot(Client):
             channels = await db.get_all_active_channels()
             for channel in channels:
                 user_id = channel['user_id']
+                account_id = channel['account_id']
                 channel_id = channel['channel_id']
                 base_username = channel['base_username']
                 interval = channel['interval']
                 
                 success, result = await link_changer.start_channel_rotation(
-                    user_id, 
+                    user_id,
+                    account_id,
                     channel_id, 
                     base_username, 
                     interval
                 )
                 if success:
-                    print(f"[v0] Resumed channel rotation for {channel_id}")
+                    print(f"[v0] Resumed channel rotation for {channel_id} (Account: {account_id})")
                 else:
                     print(f"[v0] Failed to resume channel {channel_id}: {result}")
         except Exception as e:
