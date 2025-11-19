@@ -37,6 +37,7 @@ async def help_command(client, message):
 <b>/login</b> - Login with your Telegram account
 <b>/logout</b> - Logout current account
 <b>/logoutall</b> - Logout all accounts
+<b>/changeid</b> - Switch between logged-in accounts
 
 <b>/pubchannel</b> - Add channel for auto link rotation
   Usage: /pubchannel <channel_id> <base_username> <interval>
@@ -59,6 +60,46 @@ async def help_command(client, message):
 """
     await message.reply(help_text)
 
+@Client.on_message(filters.command('changeid') & filters.private)
+async def change_account(client, message):
+    user_id = message.from_user.id
+    accounts = await db.get_user_accounts(user_id)
+    
+    if not accounts:
+        await message.reply("<b>You have no logged-in accounts. Use /login to add an account.</b>")
+        return
+    
+    if len(accounts) == 1:
+        await message.reply("<b>You only have one account. Nothing to switch.</b>")
+        return
+    
+    # Create inline buttons for each account
+    buttons = []
+    for i, account in enumerate(accounts, 1):
+        buttons.append([InlineKeyboardButton(f"Account {i}: {account['account_name']}", callback_data=f"select_account_{account['account_id']}")])
+    
+    await message.reply(
+        "<b>Select an account to activate:</b>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+@Client.on_callback_query(filters.regex("^select_account_"))
+async def handle_account_selection(client, callback_query):
+    account_id = callback_query.data.replace("select_account_", "")
+    user_id = callback_query.from_user.id
+    
+    # Verify account belongs to user
+    account = await db.get_account(account_id)
+    if not account or account['user_id'] != user_id:
+        await callback_query.answer("Invalid account!", show_alert=True)
+        return
+    
+    # Set as active account
+    await db.set_active_account(user_id, account_id)
+    
+    await callback_query.answer()
+    await callback_query.edit_message_text(f"<b>✅ Switched to account: {account['account_name']}</b>")
+
 @Client.on_message(filters.command('pubchannel') & filters.private)
 async def add_pubchannel(client, message):
     try:
@@ -72,11 +113,15 @@ async def add_pubchannel(client, message):
         interval = int(parts[3])
         
         user_id = message.from_user.id
-        user_session = await db.get_session(user_id)
         
-        if not user_session:
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
             await message.reply("<b>You must /login first before adding channels.</b>")
             return
+        
+        user_session = active_account['session']
+        account_id = active_account['account_id']
         
         # Verify channel access
         try:
@@ -89,11 +134,10 @@ async def add_pubchannel(client, message):
             await message.reply(f"<b>Error accessing channel:</b> {str(e)}\n\n<b>Make sure you're admin in the channel with rights to change username.</b>")
             return
         
-        # Add to database
-        await db.add_channel(user_id, channel_id, base_username, interval)
+        await db.add_channel(user_id, account_id, channel_id, base_username, interval)
         
         # Start rotation
-        success, result = await link_changer.start_channel_rotation(user_id, channel_id, base_username, interval)
+        success, result = await link_changer.start_channel_rotation(user_id, account_id, channel_id, base_username, interval)
         
         if success:
             await message.reply(f"<b>✅ Channel added successfully!\n\nChannel ID: {channel_id}\nBase Username: {base_username}\nInterval: {interval}s\n\nLink rotation started!</b>")
@@ -107,13 +151,19 @@ async def add_pubchannel(client, message):
 @Client.on_message(filters.command('list') & filters.private)
 async def list_channels(client, message):
     user_id = message.from_user.id
-    channels = await db.get_user_channels(user_id)
+    active_account = await db.get_active_account(user_id)
+    
+    if not active_account:
+        await message.reply("<b>You must login first.</b>")
+        return
+    
+    channels = await db.get_user_channels(user_id, active_account['account_id'])
     
     if not channels:
         await message.reply("<b>You have no active channels. Use /pubchannel to add one.</b>")
         return
     
-    text = "<b>📋 Your Active Channels:\n\n</b>"
+    text = f"<b>📋 Your Active Channels ({active_account['account_name']}):\n\n</b>"
     for i, ch in enumerate(channels, 1):
         text += f"<b>{i}. Channel ID:</b> <code>{ch['channel_id']}</code>\n"
         text += f"   <b>Base Username:</b> {ch['base_username']}\n"
@@ -125,27 +175,30 @@ async def list_channels(client, message):
 @Client.on_message(filters.command('status') & filters.private)
 async def status_command(client, message):
     user_id = message.from_user.id
-    user_session = await db.get_session(user_id)
+    active_account = await db.get_active_account(user_id)
     
-    if user_session:
-        await message.reply("<b>✅ You are logged in and ready to use the bot.</b>")
+    if active_account:
+        await message.reply(f"<b>✅ You are logged in as: {active_account['account_name']}\n\nReady to use the bot.</b>")
     else:
         await message.reply("<b>❌ You are not logged in. Use /login to get started.</b>")
 
 @Client.on_message(filters.command('showlogin') & filters.private)
 async def show_login(client, message):
-    users = await db.get_all_users()
-    logged_in = []
-    async for user in users:
-        if user.get('session'):
-            logged_in.append(f"<code>{user['id']}</code> - {user['name']}")
+    user_id = message.from_user.id
+    accounts = await db.get_user_accounts(user_id)
     
-    if logged_in:
-        text = f"<b>👥 Logged In Accounts ({len(logged_in)}):\n\n</b>"
-        text += "\n".join(logged_in)
-        await message.reply(text)
-    else:
-        await message.reply("<b>No accounts logged in.</b>")
+    if not accounts:
+        await message.reply("<b>No logged-in accounts.</b>")
+        return
+    
+    active_account = await db.get_active_account(user_id)
+    text = f"<b>👥 Your Logged In Accounts ({len(accounts)}):\n\n</b>"
+    
+    for i, account in enumerate(accounts, 1):
+        marker = "✅" if active_account and account['account_id'] == active_account['account_id'] else "  "
+        text += f"{marker} {i}. {account['account_name']}\n"
+    
+    await message.reply(text)
 
 @Client.on_message(filters.command('stop') & filters.private)
 async def stop_channel(client, message):
@@ -157,9 +210,13 @@ async def stop_channel(client, message):
         
         channel_id = int(parts[1])
         user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
         
-        # Stop rotation
-        success, result = await link_changer.stop_channel_rotation(user_id, channel_id)
+        if not active_account:
+            await message.reply("<b>You must login first.</b>")
+            return
+        
+        success, result = await link_changer.stop_channel_rotation(user_id, active_account['account_id'], channel_id)
         
         if success:
             await db.stop_channel(channel_id)
@@ -181,15 +238,20 @@ async def resume_channel(client, message):
         
         channel_id = int(parts[1])
         user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must login first.</b>")
+            return
         
         channel = await db.get_channel(channel_id)
         if not channel:
             await message.reply("<b>Channel not found.</b>")
             return
         
-        # Resume rotation
         success, result = await link_changer.resume_channel_rotation(
             user_id, 
+            active_account['account_id'],
             channel_id, 
             channel['base_username'], 
             channel['interval']
@@ -207,12 +269,11 @@ async def resume_channel(client, message):
 
 @Client.on_message(filters.command('logoutall') & filters.private)
 async def logout_all(client, message):
-    users = await db.get_all_users()
-    count = 0
-    async for user in users:
-        if user.get('session'):
-            await db.set_session(user['id'], None)
-            count += 1
+    user_id = message.from_user.id
+    accounts = await db.get_user_accounts(user_id)
+    count = len(accounts)
+    
+    for account in accounts:
+        await db.delete_account(account['account_id'])
     
     await message.reply(f"<b>✅ Logged out {count} accounts.</b>")
-                   
