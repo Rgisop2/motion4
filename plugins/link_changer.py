@@ -11,7 +11,7 @@ from plugins.database import db
 
 class LinkChanger:
     def __init__(self):
-        self.active_tasks = {}
+        self.active_tasks = {}  # Now keyed by user_id_account_id_channel_id
         self.bot_token = BOT_TOKEN
         self.session_locks = {}
 
@@ -19,14 +19,14 @@ class LinkChanger:
         """Generate random 2 characters (letters or digits)"""
         return ''.join(random.choices(string.ascii_letters + string.digits, k=2))
 
-    async def get_session_lock(self, user_id):
-        """Get or create a lock for a specific user session"""
-        if user_id not in self.session_locks:
-            self.session_locks[user_id] = asyncio.Lock()
-        return self.session_locks[user_id]
+    async def get_session_lock(self, account_id):
+        """Get or create a lock for a specific account session"""
+        if account_id not in self.session_locks:
+            self.session_locks[account_id] = asyncio.Lock()
+        return self.session_locks[account_id]
 
-    async def change_channel_link(self, user_id, user_session, channel_id, base_username):
-        session_lock = await self.get_session_lock(user_id)
+    async def change_channel_link(self, user_id, account_id, user_session, channel_id, base_username):
+        session_lock = await self.get_session_lock(account_id)
         
         log_client = Client(":memory:", api_id=API_ID, api_hash=API_HASH, bot_token=self.bot_token)
         await log_client.start()
@@ -78,24 +78,26 @@ class LinkChanger:
             await log_client.stop()
             return False, str(e)
 
-    async def start_channel_rotation(self, user_id, channel_id, base_username, interval):
+    async def start_channel_rotation(self, user_id, account_id, channel_id, base_username, interval):
         """Start automatic link rotation for a channel"""
-        task_key = f"{user_id}_{channel_id}"
+        task_key = f"{user_id}_{account_id}_{channel_id}"
         
         if task_key in self.active_tasks:
             return False, "Channel rotation already active"
         
         try:
-            user_session = await db.get_session(user_id)
-            if not user_session:
-                return False, "User session not found"
+            account = await db.get_account(account_id)
+            if not account:
+                return False, "Account not found"
+            
+            user_session = account['session']
             
             async def rotation_loop():
                 while True:
                     try:
-                        success, result = await self.change_channel_link(user_id, user_session, channel_id, base_username)
+                        success, result = await self.change_channel_link(user_id, account_id, user_session, channel_id, base_username)
                         if success:
-                            print(f"[v0] Link changed for channel {channel_id}: {result}")
+                            print(f"[v0] Link changed for channel {channel_id} (Account: {account_id}): {result}")
                         else:
                             print(f"[v0] Failed to change link for channel {channel_id}: {result}")
                         await asyncio.sleep(interval)
@@ -111,9 +113,9 @@ class LinkChanger:
         except Exception as e:
             return False, str(e)
 
-    async def stop_channel_rotation(self, user_id, channel_id):
+    async def stop_channel_rotation(self, user_id, account_id, channel_id):
         """Stop automatic link rotation for a channel"""
-        task_key = f"{user_id}_{channel_id}"
+        task_key = f"{user_id}_{account_id}_{channel_id}"
         
         if task_key not in self.active_tasks:
             return False, "Channel rotation not active"
@@ -125,12 +127,12 @@ class LinkChanger:
         except Exception as e:
             return False, str(e)
 
-    async def resume_channel_rotation(self, user_id, channel_id, base_username, interval):
+    async def resume_channel_rotation(self, user_id, account_id, channel_id, base_username, interval):
         """Resume automatic link rotation for a channel"""
-        return await self.start_channel_rotation(user_id, channel_id, base_username, interval)
+        return await self.start_channel_rotation(user_id, account_id, channel_id, base_username, interval)
 
-    async def get_active_channels_for_user(self, user_id):
-        """Get all active channels for a user"""
-        return await db.get_user_channels(user_id)
+    async def get_active_channels_for_account(self, account_id):
+        """Get all active channels for a specific account"""
+        return await db.channels_col.find({'account_id': account_id, 'is_active': True}).to_list(None)
 
 link_changer = LinkChanger()
