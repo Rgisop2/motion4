@@ -22,21 +22,30 @@ SESSION_STRING_SIZE = 351
 
 @Client.on_message(filters.private & ~filters.forwarded & filters.command(["logout"]))
 async def logout(client, message):
-    user_data = await db.get_session(message.from_user.id)  
-    if user_data is None:
-        return 
-    await db.set_session(message.from_user.id, session=None)  
-    await message.reply("**Logout Successfully** ♦")
+    user_id = message.from_user.id
+    active_account = await db.get_active_account(user_id)
+    
+    if active_account is None:
+        return await message.reply("<b>You are not logged in.</b>") 
+    
+    await db.delete_account(active_account['account_id'])
+    await message.reply(f"<b>Logged out from {active_account['account_name']} ✓</b>")
 
 @Client.on_message(filters.private & ~filters.forwarded & filters.command(["login"]))
 async def main(bot: Client, message: Message):
-    user_data = await db.get_session(message.from_user.id)
-    if user_data is not None:
-        await message.reply("**Your Are Already Logged In. First /logout Your Old Session. Then Do Login.**")
-        return 
     user_id = int(message.from_user.id)
     
-    # Instead, prompt user to provide session string or authenticate separately
+    name_msg = await bot.ask(chat_id=user_id, text="<b>Enter a name for this account</b>\n\n"
+        "Example: Main Account, Work Account, etc.\n\n"
+        "Enter /cancel to cancel")
+    
+    if name_msg.text == '/cancel':
+        return await name_msg.reply('<b>Process cancelled !</b>')
+    
+    account_name = name_msg.text.strip()
+    if not account_name:
+        return await name_msg.reply('<b>Account name cannot be empty.</b>')
+    
     session_input = await bot.ask(chat_id=user_id, text="<b>Send your Telegram session string</b>\n\n"
         "<b>How to get session string:</b>\n"
         "1. Run a user client (not bot) with your account\n"
@@ -62,16 +71,14 @@ async def main(bot: Client, message: Message):
         user_info = await uclient.get_me()
         await uclient.disconnect()
         
-        # Store the verified session
-        user_data = await db.get_session(message.from_user.id)
-        if user_data is None:
-            await db.set_session(message.from_user.id, session=string_session)
+        account_id = await db.add_account(user_id, account_name, string_session)
         
-        await bot.send_message(message.from_user.id, 
+        await bot.send_message(user_id, 
             f"<b>Account Login Successfully ✓</b>\n\n"
-            f"<b>Account:</b> {user_info.first_name}\n"
+            f"<b>Account Name:</b> {account_name}\n"
+            f"<b>Telegram Account:</b> {user_info.first_name}\n"
             f"<b>Username:</b> @{user_info.username if user_info.username else 'N/A'}\n\n"
-            f"If you get any error related to AUTH KEY, /logout first and /login again")
+            f"This account is now active. Use /changeid to switch between accounts.")
             
     except Exception as e:
         return await session_input.reply_text(f"<b>ERROR IN LOGIN:</b> <code>{str(e)}</code>\n\n"
