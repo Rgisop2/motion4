@@ -48,11 +48,15 @@ class Scheduler:
         if not channel:
             return False, "Channel not found"
         
-        if channel.get('account_id') != account_id:
+        channel_account_id = channel.get('account_id', account_id)
+        if channel_account_id != account_id:
             return False, "Channel does not belong to this account"
         
-        base_username = channel['base_username']
-        interval = channel['interval']
+        base_username = channel.get('base_username')
+        interval = channel.get('interval')
+        
+        if not base_username or not interval:
+            return False, "Channel data incomplete"
         
         async def stop_task():
             """Task to stop channel rotation at scheduled time"""
