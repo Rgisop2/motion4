@@ -48,10 +48,8 @@ class Scheduler:
         if not channel:
             return False, "Channel not found"
         
-        # Get account info for rotation details
-        account = await db.get_account(account_id)
-        if not account:
-            return False, "Account not found"
+        if channel.get('account_id') != account_id:
+            return False, "Channel does not belong to this account"
         
         base_username = channel['base_username']
         interval = channel['interval']
