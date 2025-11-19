@@ -53,10 +53,18 @@ async def help_command(client, message):
 <b>/resume</b> - Resume link changing for a channel
   Usage: /resume <channel_id>
 
+<b>/stopeveryday</b> - Schedule daily auto stop/resume
+  Usage: /stopeveryday <channel_id> <stop_time> | <resume_time>
+  Example: /stopeveryday -1001234567890 12:22:00 | 09:30:00
+
+<b>/removeschedule</b> - Remove scheduled stop/resume
+  Usage: /removeschedule <channel_id>
+
 <b>Parameters:</b>
 • channel_id: Your channel's ID (negative number)
 • base_username: Base username without suffix (e.g., 'mybase')
 • interval: Time in seconds between link changes (e.g., 3600 for 1 hour)
+• time format: HH:MM:SS (24-hour format)
 """
     await message.reply(help_text)
 
@@ -277,3 +285,109 @@ async def logout_all(client, message):
         await db.delete_account(account['account_id'])
     
     await message.reply(f"<b>✅ Logged out {count} accounts.</b>")
+
+# New command for scheduling daily stop/resume
+@Client.on_message(filters.command('stopeveryday') & filters.private)
+async def stop_everyday(client, message):
+    try:
+        parts = message.command
+        if len(parts) < 4 or '|' not in message.text:
+            await message.reply(
+                "<b>Usage: /stopeveryday <channel_id> <stop_time> | <resume_time>\n\n"
+                "Example: /stopeveryday -1001234567890 12:22:00 | 09:30:00\n\n"
+                "Time format: HH:MM:SS (24-hour format)</b>"
+            )
+            return
+        
+        channel_id = int(parts[1])
+        
+        # Parse times from message
+        times_part = message.text.split('|')
+        if len(times_part) != 2:
+            await message.reply("<b>Invalid format. Use: /stopeveryday <channel_id> <stop_time> | <resume_time></b>")
+            return
+        
+        stop_time = times_part[0].split()[-1].strip()  # Get last word before |
+        resume_time = times_part[1].strip().split()[0]  # Get first word after |
+        
+        user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must /login first.</b>")
+            return
+        
+        channel = await db.get_channel(channel_id)
+        if not channel or channel['account_id'] != active_account['account_id']:
+            await message.reply("<b>Channel not found or doesn't belong to your active account.</b>")
+            return
+        
+        # Validate time format
+        from plugins.scheduler import scheduler
+        stop_parts = await scheduler.parse_time(stop_time)
+        resume_parts = await scheduler.parse_time(resume_time)
+        
+        if not stop_parts or not resume_parts:
+            await message.reply("<b>Invalid time format. Use HH:MM:SS (e.g., 12:22:00)</b>")
+            return
+        
+        # Save schedule to database
+        await db.set_channel_schedule(channel_id, stop_time, resume_time)
+        
+        # Start scheduling tasks
+        success, result = await scheduler.schedule_channel_task(
+            channel_id,
+            user_id,
+            active_account['account_id'],
+            stop_time,
+            resume_time
+        )
+        
+        if success:
+            await message.reply(
+                f"<b>✅ Schedule set successfully!\n\n"
+                f"Channel ID: {channel_id}\n"
+                f"Stop time: {stop_time}\n"
+                f"Resume time: {resume_time}\n\n"
+                f"The channel will automatically pause at {stop_time} and resume at {resume_time} every day.</b>"
+            )
+        else:
+            await message.reply(f"<b>❌ Error setting schedule:</b> {result}")
+    except ValueError as e:
+        await message.reply("<b>Invalid channel ID. Make sure it's a number.</b>")
+    except Exception as e:
+        await message.reply(f"<b>Error:</b> {str(e)}")
+
+# New command to remove schedule
+@Client.on_message(filters.command('removeschedule') & filters.private)
+async def remove_schedule(client, message):
+    try:
+        parts = message.command
+        if len(parts) < 2:
+            await message.reply("<b>Usage: /removeschedule <channel_id></b>")
+            return
+        
+        channel_id = int(parts[1])
+        user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must /login first.</b>")
+            return
+        
+        channel = await db.get_channel(channel_id)
+        if not channel or channel['account_id'] != active_account['account_id']:
+            await message.reply("<b>Channel not found or doesn't belong to your active account.</b>")
+            return
+        
+        from plugins.scheduler import scheduler
+        success = await scheduler.remove_schedule(channel_id)
+        
+        if success:
+            await message.reply(f"<b>✅ Schedule removed for channel {channel_id}</b>")
+        else:
+            await message.reply(f"<b>❌ Error removing schedule.</b>")
+    except ValueError:
+        await message.reply("<b>Invalid channel ID.</b>")
+    except Exception as e:
+        await message.reply(f"<b>Error:</b> {str(e)}")
