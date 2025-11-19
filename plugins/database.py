@@ -7,18 +7,32 @@ class Database:
         self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.db = self._client[database_name]
         self.users_col = self.db.users
+        self.accounts_col = self.db.accounts
         self.channels_col = self.db.channels
 
     def new_user(self, id, name):
         return dict(
             id = id,
             name = name,
-            session = None,
+            active_account_id = None,  # Track which account user is currently using
+            accounts = []  # List of account IDs for this user
         )
     
-    def new_channel(self, user_id, channel_id, base_username, interval):
+    def new_account(self, user_id, account_name, session):
+        """Create a new account entry"""
+        import uuid
+        return dict(
+            account_id = str(uuid.uuid4()),
+            user_id = user_id,
+            account_name = account_name,
+            session = session,
+            created_at = None,
+        )
+    
+    def new_channel(self, user_id, account_id, channel_id, base_username, interval):
         return dict(
             user_id = user_id,
+            account_id = account_id,  # Now tied to specific account
             channel_id = channel_id,
             base_username = base_username,
             interval = interval,
@@ -44,19 +58,109 @@ class Database:
     async def delete_user(self, user_id):
         await self.users_col.delete_many({'id': int(user_id)})
 
+    async def add_account(self, user_id, account_name, session):
+        """Add a new account for a user"""
+        account = self.new_account(user_id, account_name, session)
+        await self.accounts_col.insert_one(account)
+        
+        # Add account_id to user's accounts list
+        await self.users_col.update_one(
+            {'id': int(user_id)},
+            {'$push': {'accounts': account['account_id']}}
+        )
+        
+        # If this is the first account, set it as active
+        user = await self.users_col.find_one({'id': int(user_id)})
+        if not user.get('active_account_id'):
+            await self.users_col.update_one(
+                {'id': int(user_id)},
+                {'$set': {'active_account_id': account['account_id']}}
+            )
+        
+        return account['account_id']
+    
+    async def get_user_accounts(self, user_id):
+        """Get all accounts for a user"""
+        return await self.accounts_col.find({'user_id': int(user_id)}).to_list(None)
+    
+    async def get_account(self, account_id):
+        """Get account by ID"""
+        return await self.accounts_col.find_one({'account_id': account_id})
+    
+    async def set_active_account(self, user_id, account_id):
+        """Set the active account for a user"""
+        await self.users_col.update_one(
+            {'id': int(user_id)},
+            {'$set': {'active_account_id': account_id}}
+        )
+    
+    async def get_active_account(self, user_id):
+        """Get the currently active account for a user"""
+        user = await self.users_col.find_one({'id': int(user_id)})
+        if not user or not user.get('active_account_id'):
+            return None
+        return await self.get_account(user['active_account_id'])
+    
+    async def get_active_account_session(self, user_id):
+        """Get session string of active account"""
+        account = await self.get_active_account(user_id)
+        return account['session'] if account else None
+    
+    async def delete_account(self, account_id):
+        """Delete an account and its channels"""
+        account = await self.get_account(account_id)
+        if not account:
+            return
+        
+        user_id = account['user_id']
+        
+        # Delete all channels for this account
+        await self.channels_col.delete_many({'account_id': account_id})
+        
+        # Remove account from user's accounts list
+        await self.users_col.update_one(
+            {'id': int(user_id)},
+            {'$pull': {'accounts': account_id}}
+        )
+        
+        # If deleted account was active, set next account as active
+        user = await self.users_col.find_one({'id': int(user_id)})
+        if user.get('active_account_id') == account_id:
+            accounts = await self.get_user_accounts(user_id)
+            if accounts:
+                await self.set_active_account(user_id, accounts[0]['account_id'])
+            else:
+                await self.users_col.update_one(
+                    {'id': int(user_id)},
+                    {'$set': {'active_account_id': None}}
+                )
+        
+        # Delete the account
+        await self.accounts_col.delete_one({'account_id': account_id})
+
     async def set_session(self, id, session):
-        await self.users_col.update_one({'id': int(id)}, {'$set': {'session': session}})
+        """Deprecated: use add_account instead"""
+        account = await self.get_active_account(id)
+        if account:
+            await self.accounts_col.update_one(
+                {'account_id': account['account_id']},
+                {'$set': {'session': session}}
+            )
 
     async def get_session(self, id):
-        user = await self.users_col.find_one({'id': int(id)})
-        return user['session'] if user else None
+        """Deprecated: use get_active_account_session instead"""
+        return await self.get_active_account_session(id)
 
-    async def add_channel(self, user_id, channel_id, base_username, interval):
-        channel = self.new_channel(user_id, channel_id, base_username, interval)
+    async def add_channel(self, user_id, account_id, channel_id, base_username, interval):
+        channel = self.new_channel(user_id, account_id, channel_id, base_username, interval)
         await self.channels_col.insert_one(channel)
 
-    async def get_user_channels(self, user_id):
-        return await self.channels_col.find({'user_id': int(user_id), 'is_active': True}).to_list(None)
+    async def get_user_channels(self, user_id, account_id=None):
+        """Get channels for a user, optionally filtered by account"""
+        if account_id:
+            return await self.channels_col.find({'user_id': int(user_id), 'account_id': account_id, 'is_active': True}).to_list(None)
+        else:
+            return await self.channels_col.find({'user_id': int(user_id), 'is_active': True}).to_list(None)
 
     async def get_all_active_channels(self):
         return await self.channels_col.find({'is_active': True}).to_list(None)
@@ -77,4 +181,4 @@ class Database:
         return await self.channels_col.find_one({'channel_id': int(channel_id)})
 
 db = Database(DB_URI, DB_NAME)
-  
+                          
