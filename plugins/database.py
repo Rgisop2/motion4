@@ -1,10 +1,13 @@
 import motor.motor_asyncio
+import asyncio
 from config import DB_NAME, DB_URI
+
+_db_write_lock = asyncio.Lock()
 
 class Database:
     
     def __init__(self, uri, database_name):
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri, maxPoolSize=100, minPoolSize=10, connectTimeoutMS=5000)
         self.db = self._client[database_name]
         self.users_col = self.db.users
         self.accounts_col = self.db.accounts
@@ -154,8 +157,9 @@ class Database:
         return await self.get_active_account_session(id)
 
     async def add_channel(self, user_id, account_id, channel_id, base_username, interval):
-        channel = self.new_channel(user_id, account_id, channel_id, base_username, interval)
-        await self.channels_col.insert_one(channel)
+        async with _db_write_lock:
+            channel = self.new_channel(user_id, account_id, channel_id, base_username, interval)
+            await self.channels_col.insert_one(channel)
 
     async def get_user_channels(self, user_id, account_id=None):
         """Get channels for a user, optionally filtered by account"""
@@ -168,36 +172,44 @@ class Database:
         return await self.channels_col.find({'is_active': True}).to_list(None)
 
     async def stop_channel(self, channel_id):
-        await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'is_active': False}})
+        async with _db_write_lock:
+            await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'is_active': False}})
 
     async def resume_channel(self, channel_id):
-        await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'is_active': True}})
+        async with _db_write_lock:
+            await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'is_active': True}})
 
     async def delete_channel(self, channel_id):
-        await self.channels_col.delete_one({'channel_id': int(channel_id)})
+        async with _db_write_lock:
+            await self.channels_col.delete_one({'channel_id': int(channel_id)})
 
     async def update_last_changed(self, channel_id, timestamp):
-        await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'last_changed': timestamp}})
+        for attempt in range(3):
+            try:
+                async with _db_write_lock:
+                    await self.channels_col.update_one({'channel_id': int(channel_id)}, {'$set': {'last_changed': timestamp}})
+                break
+            except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                else:
+                    raise
 
     async def get_channel(self, channel_id):
         return await self.channels_col.find_one({'channel_id': int(channel_id)})
 
     async def set_channel_schedule(self, channel_id, stop_time, resume_time):
-        """Set daily stop and resume times for a channel"""
-        await self.channels_col.update_one(
-            {'channel_id': int(channel_id)},
-            {'$set': {'stop_schedule': stop_time, 'resume_schedule': resume_time}}
-        )
+        async with _db_write_lock:
+            await self.channels_col.update_one(
+                {'channel_id': int(channel_id)},
+                {'$set': {'stop_schedule': stop_time, 'resume_schedule': resume_time}}
+            )
 
     async def remove_channel_schedule(self, channel_id):
-        """Remove scheduled stop/resume for a channel"""
-        await self.channels_col.update_one(
-            {'channel_id': int(channel_id)},
-            {'$set': {'stop_schedule': None, 'resume_schedule': None}}
-        )
-
-    async def get_scheduled_channels(self):
-        """Get all channels with scheduled stop/resume"""
-        return await self.channels_col.find({'stop_schedule': {'$ne': None}}).to_list(None)
+        async with _db_write_lock:
+            await self.channels_col.update_one(
+                {'channel_id': int(channel_id)},
+                {'$set': {'stop_schedule': None, 'resume_schedule': None}}
+            )
 
 db = Database(DB_URI, DB_NAME)
