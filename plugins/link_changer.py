@@ -48,7 +48,15 @@ class LinkChanger:
                     try:
                         await client.set_chat_username(channel_id, new_username)
                         await client.disconnect()
-                        await db.update_last_changed(channel_id, time.time())
+                        for db_attempt in range(3):
+                            try:
+                                await db.update_last_changed(channel_id, time.time())
+                                break
+                            except Exception as db_err:
+                                if db_attempt < 2:
+                                    await asyncio.sleep(0.05)
+                                else:
+                                    raise db_err
                         success_log = f"<b>✅ Link Changed Successfully</b>\n\n<b>Channel ID:</b> <code>{channel_id}</code>\n<b>New Username:</b> <code>{new_username}</code>\n<b>Time:</b> <code>{now}</code>"
                         await log_client.send_message(LOG_CHANNEL, success_log)
                         await log_client.stop()
