@@ -48,6 +48,10 @@ class Scheduler:
         if not channel:
             return False, "Channel not found"
         
+        # Do NOT check Telegram ownership or admin status
+        if channel.get('user_id') != user_id:
+            return False, "Channel does not belong to this user"
+        
         channel_account_id = channel.get('account_id', account_id)
         if channel_account_id != account_id:
             return False, "Channel does not belong to this account"
