@@ -212,4 +212,15 @@ class Database:
                 {'$set': {'stop_schedule': None, 'resume_schedule': None}}
             )
 
+    async def get_scheduled_channels(self):
+        """Get all channels with scheduled stop/resume times"""
+        return await self.channels_col.find({'$and': [
+            {'stop_schedule': {'$ne': None}},
+            {'resume_schedule': {'$ne': None}}
+        ]}).to_list(None)
+
+    async def get_channels_by_account(self, account_id):
+        """Get all channels for a specific account (active and inactive)"""
+        return await self.channels_col.find({'account_id': account_id}).to_list(None)
+
 db = Database(DB_URI, DB_NAME)
