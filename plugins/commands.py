@@ -66,6 +66,8 @@ async def help_command(client, message):
 
 <b>/removeall</b> - Remove all channels for active account
 
+<b>/schedulelist</b> - List all scheduled channels for active account
+
 <b>Parameters:</b>
 • channel_id: Your channel's ID (negative number)
 • base_username: Base username without suffix (e.g., 'mybase')
@@ -505,5 +507,39 @@ async def remove_all_channels(client, message):
             f"<b>✅ All {channel_count} channel(s) have been removed from your active account ({active_account['account_name']}).\n\n"
             f"All rotations, schedules, and data have been cleared.</b>"
         )
+    except Exception as e:
+        await message.reply(f"<b>Error:</b> {str(e)}")
+
+@Client.on_message(filters.command('schedulelist') & filters.private)
+async def schedule_list(client, message):
+    try:
+        user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must /login first.</b>")
+            return
+        
+        # Get all channels for active account with schedules
+        channels = await db.get_channels_by_account(active_account['account_id'])
+        
+        # Filter only channels that have schedules
+        scheduled_channels = [ch for ch in channels if ch.get('stop_schedule') and ch.get('resume_schedule')]
+        
+        if not scheduled_channels:
+            await message.reply("<b>📅 Schedule List\n\nNo schedules found for this account.</b>")
+            return
+        
+        # Build response with all scheduled channels
+        text = f"<b>📅 Schedule List ({active_account['account_name']}):\n\n</b>"
+        
+        for i, channel in enumerate(scheduled_channels, 1):
+            status = "🟢 Active" if channel.get('is_active') else "🔴 Inactive"
+            text += f"<b>{i}. Channel ID:</b> <code>{channel['channel_id']}</code>\n"
+            text += f"   <b>Stop Time:</b> {channel['stop_schedule']}\n"
+            text += f"   <b>Resume Time:</b> {channel['resume_schedule']}\n"
+            text += f"   <b>Status:</b> {status}\n\n"
+        
+        await message.reply(text)
     except Exception as e:
         await message.reply(f"<b>Error:</b> {str(e)}")
