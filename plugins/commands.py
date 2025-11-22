@@ -60,6 +60,12 @@ async def help_command(client, message):
 <b>/removeschedule</b> - Remove scheduled stop/resume
   Usage: /removeschedule <channel_id>
 
+<b>/remove</b> - Remove a single channel
+  Usage: /remove <channel_id>
+  Example: /remove -1002452499797
+
+<b>/removeall</b> - Remove all channels for active account
+
 <b>Parameters:</b>
 • channel_id: Your channel's ID (negative number)
 • base_username: Base username without suffix (e.g., 'mybase')
@@ -286,7 +292,6 @@ async def logout_all(client, message):
     
     await message.reply(f"<b>✅ Logged out {count} accounts.</b>")
 
-# New command for scheduling daily stop/resume
 @Client.on_message(filters.command('stopeveryday') & filters.private)
 async def stop_everyday(client, message):
     try:
@@ -319,18 +324,16 @@ async def stop_everyday(client, message):
         
         channel = await db.get_channel(channel_id)
         if not channel:
-            await message.reply("<b>Channel not found.</b>")
+            await message.reply("<b>Channel not found in your stored data.</b>")
             return
         
-        if 'account_id' not in channel:
-            # Migrate old channel to new format
-            await db.channels_col.update_one(
-                {'channel_id': int(channel_id)},
-                {'$set': {'account_id': active_account['account_id']}}
-            )
-            channel['account_id'] = active_account['account_id']
-        elif channel['account_id'] != active_account['account_id']:
-            await message.reply("<b>Channel doesn't belong to your active account.</b>")
+        # Ignore Telegram ownership/admin status since they can change
+        if channel.get('user_id') != user_id:
+            await message.reply("<b>This channel doesn't belong to you.</b>")
+            return
+        
+        if channel.get('account_id') != active_account['account_id']:
+            await message.reply("<b>This channel doesn't belong to your active account.</b>")
             return
         
         # Validate time format
@@ -369,7 +372,6 @@ async def stop_everyday(client, message):
     except Exception as e:
         await message.reply(f"<b>Error:</b> {str(e)}")
 
-# New command to remove schedule
 @Client.on_message(filters.command('removeschedule') & filters.private)
 async def remove_schedule(client, message):
     try:
@@ -388,17 +390,15 @@ async def remove_schedule(client, message):
         
         channel = await db.get_channel(channel_id)
         if not channel:
-            await message.reply("<b>Channel not found.</b>")
+            await message.reply("<b>Channel not found in your stored data.</b>")
             return
         
-        if 'account_id' not in channel:
-            await db.channels_col.update_one(
-                {'channel_id': int(channel_id)},
-                {'$set': {'account_id': active_account['account_id']}}
-            )
-            channel['account_id'] = active_account['account_id']
-        elif channel['account_id'] != active_account['account_id']:
-            await message.reply("<b>Channel doesn't belong to your active account.</b>")
+        if channel.get('user_id') != user_id:
+            await message.reply("<b>This channel doesn't belong to you.</b>")
+            return
+        
+        if channel.get('account_id') != active_account['account_id']:
+            await message.reply("<b>This channel doesn't belong to your active account.</b>")
             return
         
         if not channel.get('stop_schedule'):
@@ -416,3 +416,94 @@ async def remove_schedule(client, message):
         await message.reply("<b>Invalid channel ID.</b>")
     except Exception as e:
         await message.reply(f"<b>Error: {str(e)}</b>")
+
+@Client.on_message(filters.command('remove') & filters.private)
+async def remove_channel(client, message):
+    try:
+        parts = message.command
+        if len(parts) < 2:
+            await message.reply("<b>Usage: /remove <channel_id>\n\nExample: /remove -1002452499797</b>")
+            return
+        
+        channel_id = int(parts[1])
+        user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must /login first.</b>")
+            return
+        
+        channel = await db.get_channel(channel_id)
+        if not channel:
+            await message.reply("<b>Channel not found.</b>")
+            return
+        
+        # Verify channel belongs to active account
+        if 'account_id' not in channel:
+            await db.channels_col.update_one(
+                {'channel_id': int(channel_id)},
+                {'$set': {'account_id': active_account['account_id']}}
+            )
+            channel['account_id'] = active_account['account_id']
+        
+        if channel['account_id'] != active_account['account_id']:
+            await message.reply("<b>This channel doesn't belong to your active account.</b>")
+            return
+        
+        # Stop the rotation if active
+        if channel.get('is_active'):
+            await link_changer.stop_channel_rotation(user_id, active_account['account_id'], channel_id)
+        
+        # Remove scheduled tasks if any
+        from plugins.scheduler import scheduler
+        await scheduler.remove_schedule(channel_id)
+        
+        # Delete the channel from database
+        await db.delete_channel(channel_id)
+        
+        await message.reply(f"<b>✅ Channel {channel_id} has been removed successfully.\n\nAll data, schedules, and active rotations for this channel have been deleted.</b>")
+    except ValueError:
+        await message.reply("<b>Invalid channel ID. Make sure it's a number.</b>")
+    except Exception as e:
+        await message.reply(f"<b>Error:</b> {str(e)}")
+
+@Client.on_message(filters.command('removeall') & filters.private)
+async def remove_all_channels(client, message):
+    try:
+        user_id = message.from_user.id
+        active_account = await db.get_active_account(user_id)
+        
+        if not active_account:
+            await message.reply("<b>You must /login first.</b>")
+            return
+        
+        # Get all channels for this account
+        channels = await db.get_channels_by_account(active_account['account_id'])
+        
+        if not channels:
+            await message.reply("<b>No channels found for your active account.</b>")
+            return
+        
+        channel_count = len(channels)
+        
+        # Stop all rotations and remove schedules
+        from plugins.scheduler import scheduler
+        for channel in channels:
+            channel_id = channel['channel_id']
+            
+            # Stop rotation if active
+            if channel.get('is_active'):
+                await link_changer.stop_channel_rotation(user_id, active_account['account_id'], channel_id)
+            
+            # Remove scheduled tasks
+            await scheduler.remove_schedule(channel_id)
+            
+            # Delete the channel
+            await db.delete_channel(channel_id)
+        
+        await message.reply(
+            f"<b>✅ All {channel_count} channel(s) have been removed from your active account ({active_account['account_name']}).\n\n"
+            f"All rotations, schedules, and data have been cleared.</b>"
+        )
+    except Exception as e:
+        await message.reply(f"<b>Error:</b> {str(e)}")
